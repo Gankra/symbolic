@@ -1082,7 +1082,6 @@ impl<'data> BreakpadObject<'data> {
         Ok(BreakpadDebugSession {
             file_map: self.file_map(),
             func_records: self.func_records(),
-            stack_records: self.stack_records(),
         })
     }
 
@@ -1271,7 +1270,6 @@ impl<'data> Iterator for BreakpadSymbolIterator<'data> {
 pub struct BreakpadDebugSession<'data> {
     file_map: BreakpadFileMap<'data>,
     func_records: BreakpadFuncRecords<'data>,
-    stack_records: BreakpadStackRecords<'data>,
 }
 
 impl<'data> BreakpadDebugSession<'data> {
@@ -1288,10 +1286,6 @@ impl<'data> BreakpadDebugSession<'data> {
         BreakpadFileIterator {
             files: self.file_map.values(),
         }
-    }
-
-    pub fn stack_records(&self) -> BreakpadStackRecords<'_> {
-        self.stack_records.clone()
     }
 
     /// Looks up a file's source contents by its full canonicalized path.
