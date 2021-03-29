@@ -48,6 +48,7 @@ use super::base::{Endianness, MemoryRegion, RegisterValue};
 use parsing::ParseExprError;
 
 pub mod parsing;
+
 /// Structure that encapsulates the information necessary to evaluate Breakpad
 /// RPN expressions.
 ///
@@ -450,6 +451,130 @@ pub enum Identifier {
 /// A `STACK CFI` rule `reg: e`, where `reg` is an identifier and `e` is an expression.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rule<A: RegisterValue>(Identifier, Expr<A>);
+
+/// A half-open range `[start, end)` with some `contents` attached.
+#[derive(Clone, Debug)]
+pub struct Range<A, E> {
+    /// The left endpoint of the range.
+    pub start: A,
+
+    /// The right endpoint of teh range.
+    pub end: A,
+
+    /// The contents associated with the range.
+    pub contents: E,
+}
+
+impl<A: Eq, E> PartialEq for Range<A, E> {
+    fn eq(&self, other: &Self) -> bool {
+        self.end == other.end && self.start == other.start
+    }
+}
+
+impl<A: Eq, E> Eq for Range<A, E> {}
+
+impl<A: Ord, E> core::cmp::Ord for Range<A, E> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.end.cmp(&other.end).then(self.start.cmp(&other.start))
+    }
+}
+
+impl<A: Ord, E> PartialOrd for Range<A, E> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// A structure containing a set of disjoint half-open ranges `[a, b)` with attached contents.
+#[derive(Clone, Debug)]
+pub struct RangeMap<A, E> {
+    inner: Vec<Range<A, E>>,
+}
+
+impl<A: Ord + Copy, E> RangeMap<A, E> {
+    /// Insert a range into the map.
+    ///
+    /// The range must be disjoint from all ranges that are already present.
+    /// Returns true if the insertion was successful.
+    pub fn insert(&mut self, start: A, end: A, contents: E) -> bool {
+        let range = Range {
+            start,
+            end,
+            contents,
+        };
+        let index = match self.inner.binary_search(&range) {
+            Ok(_) => return false,
+            Err(index) => index,
+        };
+
+        if index > 0 {
+            let before = &self.inner[index - 1];
+            if before.end > start {
+                return false;
+            }
+        }
+
+        match self.inner.get(index) {
+            Some(after) if after.start < end => return false,
+            _ => self.inner.insert(index, range),
+        }
+
+        true
+    }
+
+    /// Retrieves the contents associated with the given address.
+    pub fn get(&self, address: A) -> Option<&E> {
+        self.get_range(address).map(|r| &r.contents)
+    }
+
+    /// Retrieves the range covering the given address.
+    pub fn get_range(&self, address: A) -> Option<&Range<A, E>> {
+        let range = match self.inner.binary_search_by_key(&address, |range| range.end) {
+            // This means inner(index).end == address => address might be covered by the next one
+            Ok(index) => self.inner.get(index + 1)?,
+            // This means that inner(index).end > address => this could be the one
+            Err(index) => self.inner.get(index)?,
+        };
+
+        (range.start <= address).then(|| range)
+    }
+
+    /// Retrieves the range covering the given address, or else the last range before the
+    /// address.
+    ///
+    /// # Example
+    /// ```
+    /// use symbolic_unwind::evaluator::{Range, RangeMap};
+    /// let mut map = RangeMap::default();
+    /// map.insert(0u8, 2, "First");
+    /// map.insert(2, 4, "Second");
+    /// map.insert(5, 7, "Third");
+    ///
+    /// // map now looks like this:
+    /// // |0     1|2      3|   4   |5     6|7 …
+    /// // |"First"|"Second"|<empty>|"Third"|
+    ///
+    /// let range =map.get_nearest_range(4).unwrap();
+    /// assert_eq!(range.start, 2);
+    /// assert_eq!(range.end, 4);
+    /// assert_eq!(range.contents, "Second");
+    pub fn get_nearest_range(&self, address: A) -> Option<&Range<A, E>> {
+        match self
+            .inner
+            .binary_search_by_key(&address, |range| range.start)
+        {
+            Ok(index) => self.inner.get(index),
+            Err(index) if index > 0 => self.inner.get(index - 1),
+            _ => None,
+        }
+    }
+}
+
+impl<A, E> Default for RangeMap<A, E> {
+    fn default() -> Self {
+        Self { inner: Vec::new() }
+    }
+}
 
 /// These tests are inspired by the Breakpad PostfixEvaluator unit tests:
 /// [https://github.com/google/breakpad/blob/main/src/processor/postfix_evaluator_unittest.cc]
